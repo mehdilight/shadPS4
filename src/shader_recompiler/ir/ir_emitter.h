@@ -47,6 +47,7 @@ public:
     void WorkgroupMemoryBarrier();
     void DeviceMemoryBarrier();
     void SubgroupBarrier();
+    void BalanceBarriers(const U1& skipped_cond, const U32& count);
 
     [[nodiscard]] U32 GetUserData(IR::ScalarReg reg);
 

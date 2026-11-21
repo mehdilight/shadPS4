@@ -45,6 +45,7 @@ void EmitDebugPrint(EmitContext& ctx, IR::Inst* inst, Id arg0, Id arg1, Id arg2,
 Id EmitMemtime(EmitContext& ctx);
 void EmitBarrier(EmitContext& ctx);
 void EmitSubgroupBarrier(EmitContext& ctx);
+void EmitBalanceBarriers(EmitContext& ctx, Id cond, u32 count);
 void EmitWorkgroupMemoryBarrier(EmitContext& ctx);
 void EmitDeviceMemoryBarrier(EmitContext& ctx);
 Id EmitGetUserData(EmitContext& ctx, IR::ScalarReg reg);

@@ -63,6 +63,7 @@ static void EmitBarrierInBlock(IR::Block* block, bool subgroup = false) {
 }
 
 using NodeSet = std::unordered_set<const IR::Block*>;
+using BoundsCheckSet = std::unordered_set<const IR::AbstractSyntaxNode::Data*>;
 
 static void EmitBarrierAtBlockStart(IR::Block* block) {
     auto insert_point = std::ranges::find_if_not(block->Instructions(), IR::IsPhi);
@@ -102,6 +103,30 @@ static bool IsRangeComparison(IR::Opcode opcode) {
     }
 }
 
+static bool IsGlobalCoordinate(const IR::Value& value) {
+    return IR::BreadthFirstSearch(value, [](IR::Inst* inst) -> std::optional<bool> {
+               if (inst->GetOpcode() == IR::Opcode::GetAttributeU32 &&
+                   inst->Arg(0).Attribute() == IR::Attribute::WorkgroupId) {
+                   return true;
+               }
+               return std::nullopt;
+           }) == true;
+}
+
+static bool IsDispatchConstant(const IR::Value& value) {
+    if (value.IsImmediate()) {
+        return false;
+    }
+    const IR::Inst* inst = value.Inst();
+    switch (inst->GetOpcode()) {
+    case IR::Opcode::ReadConst:
+    case IR::Opcode::GetUserData:
+        return true;
+    default:
+        return false;
+    }
+}
+
 // Comparing an invocation coordinate against a runtime dimension only diverges along the edge of
 // the dispatch, every other workgroup takes the branch as a whole.
 static bool IsBoundsCheck(const IR::Value& cond, const RuntimeInfo& runtime_info) {
@@ -131,8 +156,9 @@ static bool IsBoundsCheck(const IR::Value& cond, const RuntimeInfo& runtime_info
     if (lhs_lane == rhs_lane) {
         return !lhs_lane;
     }
+    const IR::Value& coord = lhs_lane ? lhs : rhs;
     const IR::Value& bound = lhs_lane ? rhs : lhs;
-    return !bound.IsImmediate();
+    return IsGlobalCoordinate(coord) && IsDispatchConstant(bound);
 }
 
 static bool IsDivergent(const IR::U1& cond, const RuntimeInfo& runtime_info) {
@@ -143,9 +169,10 @@ static bool IsDivergent(const IR::U1& cond, const RuntimeInfo& runtime_info) {
 // behavior when some threads write and others read from shared memory.
 static void EmitBarrierInMergeBlock(const IR::AbstractSyntaxNode::Data& data,
                                     NodeSet& divergence_end, u32& divergence_depth,
-                                    const RuntimeInfo& runtime_info) {
+                                    const RuntimeInfo& runtime_info,
+                                    const BoundsCheckSet& bounds_checks) {
     const IR::U1 cond = data.if_node.cond;
-    if (IsDivergent(cond, runtime_info) && !IsBoundsCheck(cond, runtime_info)) {
+    if (IsDivergent(cond, runtime_info) && !bounds_checks.contains(&data)) {
         if (divergence_depth == 0) {
             EmitBarrierAtBlockStart(data.if_node.merge);
         }
@@ -176,6 +203,76 @@ static NodeSet FindDivergentLoops(const IR::AbstractSyntaxList& syntax_list,
         }
     }
     return divergent_loops;
+}
+
+static bool IsSharedMemoryAccess(const IR::Inst& inst) {
+    return IsLoadShared(inst) || IsWriteShared(inst);
+}
+
+// A branch on a bounds check may be skipped by an entire host subgroup at the edge of the
+// dispatch. It can only hold workgroup barriers when that subgroup can execute the same number of
+// barriers instead, so loops touching shared memory and early exits are not allowed in its body.
+static BoundsCheckSet FindBoundsChecks(const IR::AbstractSyntaxList& syntax_list,
+                                       const RuntimeInfo& runtime_info) {
+    using Type = IR::AbstractSyntaxNode::Type;
+    BoundsCheckSet bounds_checks;
+    for (auto it = syntax_list.begin(); it != syntax_list.end(); ++it) {
+        if (it->type != Type::If || !IsBoundsCheck(it->data.if_node.cond, runtime_info)) {
+            continue;
+        }
+        const IR::Block* merge = it->data.if_node.merge;
+        u32 loop_depth{};
+        bool valid = true;
+        for (auto node = std::next(it); node != syntax_list.end(); ++node) {
+            if (node->type == Type::EndIf && node->data.end_if.merge == merge) {
+                break;
+            }
+            if (node->type == Type::Loop) {
+                ++loop_depth;
+            } else if (node->type == Type::Repeat) {
+                --loop_depth;
+            } else if (node->type == Type::Return || node->type == Type::Unreachable ||
+                       node->type == Type::Break) {
+                valid &= loop_depth > 0 && node->type == Type::Break;
+            } else if (node->type == Type::Block && loop_depth > 0) {
+                valid &= std::ranges::none_of(node->data.block->Instructions(),
+                                              IsSharedMemoryAccess);
+            }
+        }
+        if (valid) {
+            bounds_checks.insert(&it->data);
+        }
+    }
+    return bounds_checks;
+}
+
+static void BalanceBoundsCheckBarriers(const IR::AbstractSyntaxList& syntax_list,
+                                       const BoundsCheckSet& bounds_checks) {
+    using Type = IR::AbstractSyntaxNode::Type;
+    for (auto it = syntax_list.begin(); it != syntax_list.end(); ++it) {
+        if (it->type != Type::If || !bounds_checks.contains(&it->data)) {
+            continue;
+        }
+        IR::Block* merge = it->data.if_node.merge;
+        u32 num_barriers{};
+        for (auto node = std::next(it); node != syntax_list.end(); ++node) {
+            if (node->type == Type::EndIf && node->data.end_if.merge == merge) {
+                break;
+            }
+            if (node->type == Type::Block) {
+                num_barriers += static_cast<u32>(std::ranges::count_if(
+                    node->data.block->Instructions(), [](const IR::Inst& inst) {
+                        return inst.GetOpcode() == IR::Opcode::Barrier;
+                    }));
+            }
+        }
+        if (num_barriers == 0) {
+            continue;
+        }
+        auto insert_point = std::ranges::find_if_not(merge->Instructions(), IR::IsPhi);
+        IR::IREmitter ir{*merge, insert_point};
+        ir.BalanceBarriers(it->data.if_node.cond, ir.Imm32(num_barriers));
+    }
 }
 
 static constexpr u32 GcnSubgroupSize = 64;
@@ -209,6 +306,7 @@ void SharedMemoryBarrierPass(IR::Program& program, const RuntimeInfo& runtime_in
     u32 divergence_depth{};
     NodeSet divergence_end;
     const NodeSet divergent_loops = FindDivergentLoops(program.syntax_list, runtime_info);
+    const BoundsCheckSet bounds_checks = FindBoundsChecks(program.syntax_list, runtime_info);
     for (const IR::AbstractSyntaxNode& node : program.syntax_list) {
         if (node.type == Type::EndIf) {
             if (divergence_end.contains(node.data.end_if.merge)) {
@@ -219,7 +317,8 @@ void SharedMemoryBarrierPass(IR::Program& program, const RuntimeInfo& runtime_in
         // Check if branch depth is zero, we don't want to insert barrier in potentially divergent
         // code.
         if (node.type == Type::If) {
-            EmitBarrierInMergeBlock(node.data, divergence_end, divergence_depth, runtime_info);
+            EmitBarrierInMergeBlock(node.data, divergence_end, divergence_depth, runtime_info,
+                                    bounds_checks);
             continue;
         }
         if (node.type == Type::Loop && divergent_loops.contains(node.data.loop.merge)) {
@@ -238,6 +337,7 @@ void SharedMemoryBarrierPass(IR::Program& program, const RuntimeInfo& runtime_in
             EmitBarrierInBlock(node.data.block);
         }
     }
+    BalanceBoundsCheckBarriers(program.syntax_list, bounds_checks);
 }
 
 } // namespace Shader::Optimization

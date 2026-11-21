@@ -106,6 +106,10 @@ void IREmitter::Barrier() {
     Inst(Opcode::Barrier);
 }
 
+void IREmitter::BalanceBarriers(const U1& skipped_cond, const U32& count) {
+    Inst(Opcode::BalanceBarriers, skipped_cond, count);
+}
+
 void IREmitter::SubgroupBarrier() {
     Inst(Opcode::SubgroupBarrier);
 }

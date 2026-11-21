@@ -22,6 +22,7 @@ OPCODE(Barrier,                                             Void,               
 OPCODE(WorkgroupMemoryBarrier,                              Void,                                                                                           )
 OPCODE(DeviceMemoryBarrier,                                 Void,                                                                                           )
 OPCODE(SubgroupBarrier,                                     Void,                                                                                           )
+OPCODE(BalanceBarriers,                                     Void,           U1,             U32,                                                            )
 
 // Geometry shader specific
 OPCODE(EmitVertex,                                          Void,                                                                                           )

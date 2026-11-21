@@ -33,6 +33,23 @@ void EmitBarrier(EmitContext& ctx) {
                          ctx.ConstU32(static_cast<u32>(memory_semantics)));
 }
 
+void EmitBalanceBarriers(EmitContext& ctx, Id cond, u32 count) {
+    ctx.AddCapability(spv::Capability::GroupNonUniform);
+    ctx.AddCapability(spv::Capability::GroupNonUniformVote);
+    const Id subgroup_scope{ctx.ConstU32(static_cast<u32>(spv::Scope::Subgroup))};
+    const Id skipped{ctx.OpGroupNonUniformAll(ctx.U1[1], subgroup_scope, ctx.OpLogicalNot(ctx.U1[1], cond))};
+    const Id balance_label{ctx.OpLabel()};
+    const Id merge_label{ctx.OpLabel()};
+    ctx.OpSelectionMerge(merge_label, spv::SelectionControlMask::MaskNone);
+    ctx.OpBranchConditional(skipped, balance_label, merge_label);
+    ctx.AddLabel(balance_label);
+    for (u32 i = 0; i < count; ++i) {
+        EmitBarrier(ctx);
+    }
+    ctx.OpBranch(merge_label);
+    ctx.AddLabel(merge_label);
+}
+
 void EmitSubgroupBarrier(EmitContext& ctx) {
     const auto semantics{static_cast<u32>(spv::MemorySemanticsMask::AcquireRelease |
                                           spv::MemorySemanticsMask::WorkgroupMemory)};

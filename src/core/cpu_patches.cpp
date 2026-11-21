@@ -916,6 +916,24 @@ static void GenerateVMASKMOV(void* address, const ZydisDecodedInstruction& instr
     c.popfq();
     c.lea(rsp, ptr[rsp + stack_space]);
 }
+
+// Rosetta 2 crashes with EmulateForward when the upper half of a 256-bit store page faults,
+// so split unaligned YMM stores into two 128-bit stores that can fault independently.
+static bool FilterYmmStore(const ZydisDecodedOperand* operands) {
+    return operands[0].type == ZYDIS_OPERAND_TYPE_MEMORY && operands[0].size == 256 &&
+           operands[1].type == ZYDIS_OPERAND_TYPE_REGISTER;
+}
+
+static void GenerateSplitYmmStore(void* address, const ZydisDecodedInstruction& instruction,
+                                  const ZydisDecodedOperand* operands, Xbyak::CodeGenerator& c) {
+    const auto src_idx = ZydisToXbyakRegisterOperand(operands[1]).getIdx();
+    ZydisDecodedOperand upper = operands[0];
+    upper.mem.disp.size = 32;
+    upper.mem.disp.value += 16;
+
+    c.vmovups(ZydisToXbyakMemoryOperand(address, instruction, operands[0]), Xbyak::Xmm(src_idx));
+    c.vextractf128(ZydisToXbyakMemoryOperand(address, instruction, upper), Xbyak::Ymm(src_idx), 1);
+}
 #endif
 
 using PatchFilter = bool (*)(const ZydisDecodedOperand*);
@@ -956,6 +974,9 @@ static const std::unordered_map<ZydisMnemonic, std::vector<PatchInfo>> Patches =
     {ZYDIS_MNEMONIC_VCMPSS, {{FilterNegatedScalarCompare, GenerateNegatedScalarCompare, true}}},
     {ZYDIS_MNEMONIC_VMASKMOVPS, {{FilterRosetta, GenerateVMASKMOV, true}}},
     {ZYDIS_MNEMONIC_VMASKMOVPD, {{FilterRosetta, GenerateVMASKMOV, true}}},
+    {ZYDIS_MNEMONIC_VMOVUPS, {{FilterYmmStore, GenerateSplitYmmStore, true}}},
+    {ZYDIS_MNEMONIC_VMOVUPD, {{FilterYmmStore, GenerateSplitYmmStore, true}}},
+    {ZYDIS_MNEMONIC_VMOVDQU, {{FilterYmmStore, GenerateSplitYmmStore, true}}},
 #else
     // FS segment patches
     // For most of these, Windows needs a trampoline while other platforms do not.

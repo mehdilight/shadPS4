@@ -25,6 +25,8 @@ struct SharpReference {
     u32 num_dwords{};
     SharpFetchPostOp post_op{};
     PostOpData post_op_data;
+    u32 dw1_and_mask{~0U};
+    u32 dw1_or_mask{};
 };
 
 struct ResourceDiscovery {

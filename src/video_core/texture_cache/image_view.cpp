@@ -93,6 +93,10 @@ ImageViewInfo::ImageViewInfo(const AmdGpu::DepthBuffer& depth_buffer, AmdGpu::De
 ImageView::ImageView(const Vulkan::Instance& instance, const ImageViewInfo& info_,
                      const Image& image, vk::Image view_image)
     : info{info_} {
+    const u32 image_layers = image.info.resources.layers;
+    info.range.base.layer = std::min<u32>(info.range.base.layer, image_layers - 1);
+    info.range.extent.layers =
+        std::min<u32>(info.range.extent.layers, image_layers - info.range.base.layer);
     vk::ImageViewUsageCreateInfo usage_ci{.usage = image.usage_flags};
     if (!info.is_storage) {
         usage_ci.usage &= ~vk::ImageUsageFlagBits::eStorage;

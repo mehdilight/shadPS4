@@ -348,6 +348,25 @@ void DiscoverImageSharp(IR::Block& block, IR::Inst& inst, ResourceDiscoveryList&
         }
     }
 
+    while (auto* dw1_inst = tsharp.dwords[1].TryInst()) {
+        const auto opcode = dw1_inst->GetOpcode();
+        if (opcode != IR::Opcode::BitwiseAnd32 && opcode != IR::Opcode::BitwiseOr32) {
+            break;
+        }
+        const bool imm_rhs = dw1_inst->Arg(1).IsImmediate();
+        if (!imm_rhs && !dw1_inst->Arg(0).IsImmediate()) {
+            break;
+        }
+        const u32 imm = dw1_inst->Arg(imm_rhs ? 1 : 0).U32();
+        if (opcode == IR::Opcode::BitwiseAnd32) {
+            tsharp.dw1_and_mask &= imm;
+            tsharp.dw1_or_mask &= imm;
+        } else {
+            tsharp.dw1_or_mask |= imm;
+        }
+        tsharp.dwords[1] = dw1_inst->Arg(imm_rhs ? 0 : 1);
+    }
+
     if (auto [tsharp_dw3, tsharp_dw4, found] =
             CheckCubeTo2DArrayPattern(tsharp.dwords[3], tsharp.dwords[4]);
         found) {

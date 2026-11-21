@@ -116,7 +116,9 @@ public:
             return desc.sharp_fetch == existing.sharp_fetch && desc.is_array == existing.is_array &&
                    desc.mip_fallback_mode == existing.mip_fallback_mode &&
                    desc.constant_mip_index == existing.constant_mip_index &&
-                   desc.post_op == existing.post_op;
+                   desc.post_op == existing.post_op &&
+                   desc.dw1_and_mask == existing.dw1_and_mask &&
+                   desc.dw1_or_mask == existing.dw1_or_mask;
         })};
         auto& image = image_resources[index];
         image.is_atomic |= desc.is_atomic;
@@ -247,6 +249,8 @@ void PatchImageSharp(const ResourceDiscovery& resource, Info& info, Descriptors&
         .is_written = is_written,
         .is_r128 = bool(inst_info.is_r128),
         .post_op = resource.sharps[0].post_op,
+        .dw1_and_mask = resource.sharps[0].dw1_and_mask,
+        .dw1_or_mask = resource.sharps[0].dw1_or_mask,
     };
 
     auto image = image_res.GetSharp(info);

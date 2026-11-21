@@ -138,6 +138,12 @@ Image::Image(const Vulkan::Instance& instance, Vulkan::Runtime& runtime_,
         return;
     }
 
+    if (info.resources.layers > instance.GetMaxImageArrayLayers()) {
+        LOG_WARNING(Render_Vulkan, "Clamping image layers {} to device limit {}",
+                    info.resources.layers, instance.GetMaxImageArrayLayers());
+        info.resources.layers = static_cast<u16>(instance.GetMaxImageArrayLayers());
+    }
+
     image_uid = global_image_uid.Next();
     vk::ImageCreateFlags flags{vk::ImageCreateFlagBits::eMutableFormat |
                                vk::ImageCreateFlagBits::eExtendedUsage};
@@ -248,6 +254,14 @@ ImageView& Image::FindView(const ImageViewInfo& view_info, BackingImage& view_ba
 void Image::GetBarriers(Barriers& barriers, BackingImage& image_backing, vk::ImageLayout dst_layout,
                         vk::AccessFlags2 dst_mask, vk::PipelineStageFlags2 dst_stage,
                         std::optional<SubresourceRange> subres_range) {
+    if (subres_range) {
+        auto& base = subres_range->base;
+        auto& extent = subres_range->extent;
+        base.layer = std::min<u16>(base.layer, info.resources.layers - 1);
+        extent.layers = std::min<u16>(extent.layers, info.resources.layers - base.layer);
+        base.level = std::min<u16>(base.level, info.resources.levels - 1);
+        extent.levels = std::min<u16>(extent.levels, info.resources.levels - base.level);
+    }
     auto& last_state = image_backing.state;
     auto& subresource_states = image_backing.subresource_states;
 

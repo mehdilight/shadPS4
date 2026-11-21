@@ -395,6 +395,11 @@ public:
         return features.shaderClipDistance;
     }
 
+    /// Returns the maximum number of image array layers.
+    u32 GetMaxImageArrayLayers() const {
+        return properties.limits.maxImageArrayLayers;
+    }
+
     /// Returns the maximim viewport width.
     u32 GetMaxViewportWidth() const {
         return properties.limits.maxViewportDimensions[0];

@@ -602,6 +602,8 @@ ImageId TextureCache::ExpandImage(const ImageInfo& info, ImageId image_id) {
 }
 
 ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
+    desc.info.resources.layers = std::min<u16>(
+        desc.info.resources.layers, static_cast<u16>(instance.GetMaxImageArrayLayers()));
     const auto& info = desc.info;
 
     ASSERT(info.guest_address != 0);

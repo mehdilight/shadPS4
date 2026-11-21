@@ -71,6 +71,7 @@ public:
     [[nodiscard]] U32 GetVccLo();
     [[nodiscard]] U32 GetVccHi();
     [[nodiscard]] U32 GetM0();
+    void SetImageTableIndex(const U32& binding, const U32& index);
     void SetScc(const U1& value);
     void SetExec(const U1& value);
     void SetVccLo(const U32& value);

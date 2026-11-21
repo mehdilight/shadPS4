@@ -27,6 +27,9 @@ struct SharpReference {
     PostOpData post_op_data;
     u32 dw1_and_mask{~0U};
     u32 dw1_or_mask{};
+    IR::Value table_index{};
+    u32 table_size{};
+    std::array<IR::Inst*, 16 * 8> table_dwords{};
 };
 
 struct ResourceDiscovery {

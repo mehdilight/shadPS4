@@ -46,6 +46,7 @@ bool Inst::MayHaveSideEffects() const noexcept {
     case Opcode::Epilogue:
     case Opcode::Discard:
     case Opcode::DiscardCond:
+    case Opcode::SetImageTableIndex:
     case Opcode::SetAttribute:
     case Opcode::SetTcsGenericAttribute:
     case Opcode::SetPatch:

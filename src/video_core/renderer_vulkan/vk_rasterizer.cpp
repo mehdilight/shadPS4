@@ -882,6 +882,10 @@ void Rasterizer::BindBuffers(const Shader::Info& stage, Shader::Backend::Binding
     }
 }
 
+static bool IsValidSwizzle(u64 swizzle) {
+    return swizzle != 2 && swizzle != 3;
+}
+
 void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindings& binding) {
     const u32 first_image_idx = image_infos.size();
     // To emulate storing to explicit mip levels, build a descriptor array with each mip level.
@@ -889,6 +893,33 @@ void Rasterizer::BindTextures(const Shader::Info& stage, Shader::Backend::Bindin
 
     u32 num_images{};
     for (const auto& image_desc : stage.images) {
+        if (image_desc.table_size) {
+            const auto view_type = image_desc.GetSharp(stage).GetViewType(image_desc.is_array);
+            for (u32 i = 0; i < image_desc.table_size; i++) {
+                const auto entry = image_desc.GetTableSharp(stage, i);
+                auto& [image_id, desc] = image_bindings[num_images++];
+                image_id = {};
+                const auto entry_data_fmt = entry.GetDataFmt();
+                const auto entry_num_fmt = entry.GetNumberFmt();
+                if (entry.Address() == 0 || entry_data_fmt == AmdGpu::DataFormat::FormatInvalid ||
+                    !magic_enum::enum_contains(entry_data_fmt) ||
+                    !magic_enum::enum_contains(entry_num_fmt) ||
+                    !memory->IsValidGpuMapping(entry.Address(), 0) ||
+                    entry.GetViewType(image_desc.is_array) != view_type ||
+                    entry.type < u64(AmdGpu::ImageType::Color1D) ||
+                    !IsValidSwizzle(entry.dst_sel_x) || !IsValidSwizzle(entry.dst_sel_y) ||
+                    !IsValidSwizzle(entry.dst_sel_z) || !IsValidSwizzle(entry.dst_sel_w) ||
+                    entry.width >= 16384 || entry.height >= 16384 ||
+                    (entry.GetType() == AmdGpu::ImageType::Color3D && entry.depth >= 2048)) {
+                    continue;
+                }
+                std::construct_at(&desc, entry, image_desc);
+                image_id = texture_cache.FindImage(desc);
+                texture_cache.GetImage(image_id).binding.is_bound = 1u;
+            }
+            image_descriptor_array_sizes.push_back(image_desc.table_size);
+            continue;
+        }
         const auto tsharp = image_desc.GetSharp(stage);
         const auto data_fmt = tsharp.GetDataFmt();
         const auto num_fmt = tsharp.GetNumberFmt();

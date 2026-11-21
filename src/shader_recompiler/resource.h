@@ -137,12 +137,42 @@ struct ImageResource {
     SharpFetchPostOp post_op{};
     u32 dw1_and_mask{~0U};
     u32 dw1_or_mask{};
+    static constexpr u32 MaxTableEntries = 16;
+    u8 table_size{};
+    std::array<SharpLocation, MaxTableEntries * 8> table_offsets{};
+
+    constexpr AmdGpu::Image GetTableSharp(const auto& info, u32 entry) const noexcept {
+        std::array<u32, 8> dwords{};
+        const u32 num_dwords = is_r128 ? 4 : 8;
+        for (u32 i = 0; i < num_dwords; i++) {
+            dwords[i] = info.flattened_ud_buf[table_offsets[entry * 8 + i]];
+        }
+        AmdGpu::Image image;
+        std::memcpy(&image, dwords.data(), sizeof(image));
+        if (is_r128) {
+            image.pitch = image.width;
+        }
+        return Process(image);
+    }
 
     constexpr AmdGpu::Image GetSharp(const auto& info) const noexcept {
+        if (table_size) {
+            for (u32 entry = 0; entry < table_size; entry++) {
+                const auto image = GetTableSharp(info, entry);
+                if (image.Address() != 0) {
+                    return image;
+                }
+            }
+            return AmdGpu::Image::Null(is_depth);
+        }
         AmdGpu::Image image{};
         if (!Fetch(info.flattened_ud_buf.data(), &image)) {
             return AmdGpu::Image::Null(is_depth);
         }
+        return Process(image);
+    }
+
+    constexpr AmdGpu::Image Process(AmdGpu::Image image) const noexcept {
         auto& dw1 = reinterpret_cast<u32*>(&image)[1];
         dw1 = (dw1 & dw1_and_mask) | dw1_or_mask;
         if (post_op == SharpFetchPostOp::ConvertCubeTo2DArray) {
@@ -175,6 +205,9 @@ struct ImageResource {
     }
 
     u32 NumBindings(const auto& info) const {
+        if (table_size) {
+            return table_size;
+        }
         const AmdGpu::Image tsharp = GetSharp(info);
         return (mip_fallback_mode == MipStorageFallbackMode::DynamicIndex)
                    ? (tsharp.last_level - tsharp.base_level + 1)

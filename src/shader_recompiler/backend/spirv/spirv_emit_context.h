@@ -289,7 +289,11 @@ public:
         bool is_integer = false;
         bool is_storage = false;
         MipStorageFallbackMode mip_fallback_mode{};
+        u32 table_size{};
+        Id table_index{};
     };
+
+    Id ImagePointer(const TextureDefinition& texture);
 
     enum class PointerType : u32 {
         U8,
@@ -453,6 +457,7 @@ private:
     Id DefineUfloatM5ToFloat32(u32 mantissa_bits, std::string_view name);
 
     Id DefineGetBdaPointer();
+
 
     Id DefineReadConst(bool dynamic);
 

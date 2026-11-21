@@ -118,7 +118,9 @@ public:
                    desc.constant_mip_index == existing.constant_mip_index &&
                    desc.post_op == existing.post_op &&
                    desc.dw1_and_mask == existing.dw1_and_mask &&
-                   desc.dw1_or_mask == existing.dw1_or_mask;
+                   desc.dw1_or_mask == existing.dw1_or_mask &&
+                   desc.table_size == existing.table_size &&
+                   desc.table_offsets == existing.table_offsets;
         })};
         auto& image = image_resources[index];
         image.is_atomic |= desc.is_atomic;
@@ -252,6 +254,16 @@ void PatchImageSharp(const ResourceDiscovery& resource, Info& info, Descriptors&
         .dw1_and_mask = resource.sharps[0].dw1_and_mask,
         .dw1_or_mask = resource.sharps[0].dw1_or_mask,
     };
+    const auto& tsharp_ref = resource.sharps[0];
+    if (tsharp_ref.table_size) {
+        image_res.table_size = static_cast<u8>(tsharp_ref.table_size);
+        for (u32 entry = 0; entry < tsharp_ref.table_size; entry++) {
+            for (u32 i = 0; i < tsharp_ref.num_dwords; i++) {
+                const auto* dword = tsharp_ref.table_dwords[entry * 8 + i];
+                image_res.table_offsets[entry * 8 + i] = SharpLocationFromSource(dword);
+            }
+        }
+    }
 
     auto image = image_res.GetSharp(info);
     ASSERT(image.GetType() != AmdGpu::ImageType::Invalid);
@@ -325,6 +337,9 @@ void PatchImageSharp(const ResourceDiscovery& resource, Info& info, Descriptors&
     u32 image_binding = descriptors.Add(image_res);
 
     IR::IREmitter ir{*inst.GetParent(), IR::Block::InstructionList::s_iterator_to(inst)};
+    if (tsharp_ref.table_size) {
+        ir.SetImageTableIndex(ir.Imm32(image_binding), IR::U32{tsharp_ref.table_index});
+    }
 
     if (inst.GetOpcode() == IR::Opcode::ImageSampleRaw) {
         auto& lod_prod = resource.sharps[1].post_op_data.lod_prod;

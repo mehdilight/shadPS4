@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "common/assert.h"
+#include <optional>
+#include "shader_recompiler/ir/ir_emitter.h"
 #include "shader_recompiler/ir/passes/ir_passes.h"
 #include "shader_recompiler/ir/passes/resource_pass.h"
 #include "shader_recompiler/ir/program.h"
@@ -331,6 +333,113 @@ void DiscoverBufferSharp(IR::Block& block, IR::Inst& inst, ResourceDiscoveryList
     MarkReadConstBufferSharpSources(vsharp);
 }
 
+struct LinearOffset {
+    IR::Value index;
+    u32 scale;
+    u32 bias;
+};
+
+static std::optional<LinearOffset> ParseLinearOffset(const IR::Value& value) {
+    if (value.IsImmediate()) {
+        return LinearOffset{IR::Value{}, 0, value.U32()};
+    }
+    IR::Inst* inst = value.Inst();
+    const auto imm_operand = [&]() -> std::optional<std::pair<IR::Value, u32>> {
+        if (inst->Arg(1).IsImmediate()) {
+            return std::make_pair(inst->Arg(0), inst->Arg(1).U32());
+        }
+        if (inst->Arg(0).IsImmediate()) {
+            return std::make_pair(inst->Arg(1), inst->Arg(0).U32());
+        }
+        return std::nullopt;
+    };
+    switch (inst->GetOpcode()) {
+    case IR::Opcode::IAdd32: {
+        const auto lhs = ParseLinearOffset(inst->Arg(0));
+        const auto rhs = ParseLinearOffset(inst->Arg(1));
+        if (!lhs || !rhs) {
+            return std::nullopt;
+        }
+        if (!lhs->index.IsEmpty() && !rhs->index.IsEmpty()) {
+            return std::nullopt;
+        }
+        const IR::Value index = lhs->index.IsEmpty() ? rhs->index : lhs->index;
+        return LinearOffset{index, lhs->scale + rhs->scale, lhs->bias + rhs->bias};
+    }
+    case IR::Opcode::IMul32:
+    case IR::Opcode::ShiftLeftLogical32:
+    case IR::Opcode::ShiftRightLogical32: {
+        const auto operand = imm_operand();
+        if (!operand || (inst->GetOpcode() != IR::Opcode::IMul32 && !inst->Arg(1).IsImmediate())) {
+            break;
+        }
+        const auto inner = ParseLinearOffset(operand->first);
+        if (!inner) {
+            return std::nullopt;
+        }
+        if (inst->GetOpcode() == IR::Opcode::IMul32) {
+            return LinearOffset{inner->index, inner->scale * operand->second,
+                                inner->bias * operand->second};
+        }
+        const u32 factor = 1U << operand->second;
+        if (inst->GetOpcode() == IR::Opcode::ShiftLeftLogical32) {
+            return LinearOffset{inner->index, inner->scale * factor, inner->bias * factor};
+        }
+        if (inner->scale % factor != 0 || inner->bias % factor != 0) {
+            return std::nullopt;
+        }
+        return LinearOffset{inner->index, inner->scale / factor, inner->bias / factor};
+    }
+    default:
+        break;
+    }
+    return LinearOffset{value, 1, 0};
+}
+
+static void DiscoverSharpTable(IR::Inst& user, SharpReference& sharp) {
+    constexpr u32 TableSize = 16;
+    IR::Value base_lo, base_hi, base;
+    std::optional<LinearOffset> first;
+    for (u32 i = 0; i < sharp.num_dwords; i++) {
+        IR::Inst* dword = sharp.dwords[i].TryInst();
+        if (!dword || dword->GetOpcode() != IR::Opcode::ReadConst ||
+            dword->Arg(1).IsImmediate()) {
+            return;
+        }
+        IR::Inst* addr = dword->Arg(0).Inst();
+        if (i == 0) {
+            base = dword->Arg(0);
+            base_lo = addr->Arg(0);
+            base_hi = addr->Arg(1);
+        } else if (addr->Arg(0) != base_lo || addr->Arg(1) != base_hi) {
+            return;
+        }
+        const auto offset = ParseLinearOffset(dword->Arg(1));
+        if (!offset || offset->index.IsEmpty()) {
+            return;
+        }
+        if (i == 0) {
+            first = offset;
+        } else if (offset->index != first->index || offset->scale != first->scale ||
+                   offset->bias != first->bias + i) {
+            return;
+        }
+    }
+    if (!first || first->scale < sharp.num_dwords) {
+        return;
+    }
+
+    IR::IREmitter ir{*user.GetParent(), IR::Block::InstructionList::s_iterator_to(user)};
+    for (u32 entry = 0; entry < TableSize; entry++) {
+        for (u32 i = 0; i < sharp.num_dwords; i++) {
+            const u32 offset = first->bias + first->scale * entry + i;
+            sharp.table_dwords[entry * 8 + i] = ir.ReadConst(base, ir.Imm32(offset)).Inst();
+        }
+    }
+    sharp.table_index = first->index;
+    sharp.table_size = TableSize;
+}
+
 void DiscoverImageSharp(IR::Block& block, IR::Inst& inst, ResourceDiscoveryList& resources) {
     IR::Inst* image_handle = inst.Arg(0).Inst();
     ASSERT(image_handle->GetOpcode() == IR::Opcode::ImageHandle);
@@ -366,6 +475,8 @@ void DiscoverImageSharp(IR::Block& block, IR::Inst& inst, ResourceDiscoveryList&
         }
         tsharp.dwords[1] = dw1_inst->Arg(imm_rhs ? 0 : 1);
     }
+
+    DiscoverSharpTable(inst, tsharp);
 
     if (auto [tsharp_dw3, tsharp_dw4, found] =
             CheckCubeTo2DArrayPattern(tsharp.dwords[3], tsharp.dwords[4]);

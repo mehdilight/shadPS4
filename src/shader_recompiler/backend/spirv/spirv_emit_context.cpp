@@ -1004,7 +1004,7 @@ void EmitContext::DefineImagesAndSamplers() {
 
         const u32 num_bindings = image_desc.NumBindings(info);
         Id pointee_type = image_type;
-        if (mip_fallback_mode == MipStorageFallbackMode::DynamicIndex) {
+        if (mip_fallback_mode == MipStorageFallbackMode::DynamicIndex || image_desc.table_size) {
             pointee_type = TypeArray(pointee_type, ConstU32(num_bindings));
         }
 
@@ -1023,6 +1023,7 @@ void EmitContext::DefineImagesAndSamplers() {
             .is_integer = is_integer,
             .is_storage = is_storage,
             .mip_fallback_mode = mip_fallback_mode,
+            .table_size = image_desc.table_size,
         });
         interfaces.push_back(id);
     }
@@ -1274,6 +1275,15 @@ Id EmitContext::DefineGetBdaPointer() {
     OpReturnValue(result);
     OpFunctionEnd();
     return func;
+}
+
+Id EmitContext::ImagePointer(const TextureDefinition& texture) {
+    if (!texture.table_size) {
+        return texture.id;
+    }
+    const Id index = OpUMin(U32[1], texture.table_index, ConstU32(texture.table_size - 1));
+    const Id pointer_type = TypePointer(spv::StorageClass::UniformConstant, texture.image_type);
+    return OpAccessChain(pointer_type, texture.id, index);
 }
 
 Id EmitContext::DefineReadConst(bool dynamic) {

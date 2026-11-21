@@ -227,6 +227,10 @@ U32 IREmitter::GetM0() {
     return Inst<U32>(Opcode::GetM0);
 }
 
+void IREmitter::SetImageTableIndex(const U32& binding, const U32& index) {
+    Inst(Opcode::SetImageTableIndex, binding, index);
+}
+
 void IREmitter::SetScc(const U1& value) {
     Inst(Opcode::SetScc, value);
 }

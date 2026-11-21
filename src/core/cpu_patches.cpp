@@ -2936,6 +2936,26 @@ static u8* FindScalarCompareInstructionStart(u8* opcode, const u8* lower_bound) 
     }
     return nullptr;
 }
+
+/// Returns the start of the VEX encoded 256-bit VMOVUPS/VMOVUPD/VMOVDQU store whose opcode is at
+/// the given address, or null if the bytes before it are not its VEX prefix.
+static u8* FindYmmStoreInstructionStart(u8* opcode, const u8* lower_bound) {
+    if (opcode[0] != 0x11 && opcode[0] != 0x7F) {
+        return nullptr;
+    }
+    const auto matches = [&](u8 l_pp) {
+        const u8 pp = l_pp & 0x3;
+        return (l_pp & 0x4) != 0 && (opcode[0] == 0x11 ? pp <= 1 : pp == 2);
+    };
+    if (opcode - 2 >= lower_bound && opcode[-2] == 0xC5 && matches(opcode[-1])) {
+        return opcode - 2;
+    }
+    if (opcode - 3 >= lower_bound && opcode[-3] == 0xC4 && (opcode[-2] & 0x1F) == 0x1 &&
+        matches(opcode[-1])) {
+        return opcode - 3;
+    }
+    return nullptr;
+}
 #endif
 
 /// Patches the CPU instructions between covered_ranges in place, without relocating any.
@@ -2956,6 +2976,9 @@ static void PatchUncoveredCpuInstructions(u64 segment_addr, const AddressRanges&
             if (start == nullptr) {
                 start =
                     FindScalarCompareInstructionStart(reinterpret_cast<u8*>(address), lower_bound);
+            }
+            if (start == nullptr) {
+                start = FindYmmStoreInstructionStart(reinterpret_cast<u8*>(address), lower_bound);
             }
 #endif
             if (start == nullptr) {

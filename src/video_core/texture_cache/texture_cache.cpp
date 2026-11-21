@@ -602,8 +602,13 @@ ImageId TextureCache::ExpandImage(const ImageInfo& info, ImageId image_id) {
 }
 
 ImageId TextureCache::FindImage(ImageDesc& desc, bool exact_fmt) {
-    desc.info.resources.layers = std::min<u16>(
-        desc.info.resources.layers, static_cast<u16>(instance.GetMaxImageArrayLayers()));
+    if (desc.info.resources.layers > instance.GetMaxImageArrayLayers()) {
+        LOG_DEBUG(Render_Vulkan, "Clamping {}x{} {} type {} layers {} at {:#x}",
+                    desc.info.size.width, desc.info.size.height,
+                    vk::to_string(desc.info.pixel_format), static_cast<u32>(desc.info.type),
+                    desc.info.resources.layers, desc.info.guest_address);
+        desc.info.resources.layers = static_cast<u16>(instance.GetMaxImageArrayLayers());
+    }
     const auto& info = desc.info;
 
     ASSERT(info.guest_address != 0);

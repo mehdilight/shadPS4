@@ -70,8 +70,11 @@ static void EmitBarrierAtBlockStart(IR::Block* block) {
     ir.Barrier();
 }
 
-static bool IsDivergent(const IR::U1& cond, const RuntimeInfo& runtime_info) {
-    return IR::BreadthFirstSearch(cond, [&runtime_info](IR::Inst* inst) -> std::optional<bool> {
+static bool DependsOnInvocationId(const IR::Value& value, const RuntimeInfo& runtime_info) {
+    if (value.IsImmediate()) {
+        return false;
+    }
+    return IR::BreadthFirstSearch(value, [&runtime_info](IR::Inst* inst) -> std::optional<bool> {
                if (inst->GetOpcode() == IR::Opcode::GetAttributeU32 &&
                    inst->Arg(0).Attribute() == IR::Attribute::LocalInvocationId) {
                    const u32 component = inst->Arg(1).U32();
@@ -83,13 +86,66 @@ static bool IsDivergent(const IR::U1& cond, const RuntimeInfo& runtime_info) {
            }) == true;
 }
 
+static bool IsRangeComparison(IR::Opcode opcode) {
+    switch (opcode) {
+    case IR::Opcode::SLessThan32:
+    case IR::Opcode::ULessThan32:
+    case IR::Opcode::SLessThanEqual32:
+    case IR::Opcode::ULessThanEqual32:
+    case IR::Opcode::SGreaterThan32:
+    case IR::Opcode::UGreaterThan32:
+    case IR::Opcode::SGreaterThanEqual32:
+    case IR::Opcode::UGreaterThanEqual32:
+        return true;
+    default:
+        return false;
+    }
+}
+
+// Comparing an invocation coordinate against a runtime dimension only diverges along the edge of
+// the dispatch, every other workgroup takes the branch as a whole.
+static bool IsBoundsCheck(const IR::Value& cond, const RuntimeInfo& runtime_info) {
+    if (cond.IsImmediate()) {
+        return true;
+    }
+    const IR::Inst* inst = cond.Inst();
+    const IR::Opcode opcode = inst->GetOpcode();
+    if (opcode == IR::Opcode::ConditionRef) {
+        return IsBoundsCheck(inst->Arg(0), runtime_info);
+    }
+    if (opcode == IR::Opcode::LogicalNot && !inst->Arg(0).IsImmediate() &&
+        inst->Arg(0).Inst()->GetOpcode() == IR::Opcode::LogicalNot) {
+        return IsBoundsCheck(inst->Arg(0).Inst()->Arg(0), runtime_info);
+    }
+    if (opcode == IR::Opcode::LogicalAnd) {
+        return IsBoundsCheck(inst->Arg(0), runtime_info) &&
+               IsBoundsCheck(inst->Arg(1), runtime_info);
+    }
+    if (!IsRangeComparison(opcode)) {
+        return !DependsOnInvocationId(cond, runtime_info);
+    }
+    const IR::Value lhs = inst->Arg(0);
+    const IR::Value rhs = inst->Arg(1);
+    const bool lhs_lane = DependsOnInvocationId(lhs, runtime_info);
+    const bool rhs_lane = DependsOnInvocationId(rhs, runtime_info);
+    if (lhs_lane == rhs_lane) {
+        return !lhs_lane;
+    }
+    const IR::Value& bound = lhs_lane ? rhs : lhs;
+    return !bound.IsImmediate();
+}
+
+static bool IsDivergent(const IR::U1& cond, const RuntimeInfo& runtime_info) {
+    return DependsOnInvocationId(cond, runtime_info);
+}
+
 // Inserts a barrier after divergent conditional blocks to avoid undefined
 // behavior when some threads write and others read from shared memory.
 static void EmitBarrierInMergeBlock(const IR::AbstractSyntaxNode::Data& data,
                                     NodeSet& divergence_end, u32& divergence_depth,
                                     const RuntimeInfo& runtime_info) {
     const IR::U1 cond = data.if_node.cond;
-    if (IsDivergent(cond, runtime_info)) {
+    if (IsDivergent(cond, runtime_info) && !IsBoundsCheck(cond, runtime_info)) {
         if (divergence_depth == 0) {
             EmitBarrierAtBlockStart(data.if_node.merge);
         }
